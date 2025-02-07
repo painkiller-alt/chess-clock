@@ -1,5 +1,6 @@
 package com.oltrysifp.chessclock
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -24,6 +25,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.oltrysifp.chessclock.util.darkenColor
+import com.oltrysifp.chessclock.util.lightenColor
+import com.oltrysifp.chessclock.util.saturateColor
 
 @Composable
 fun InputDefault(
@@ -33,6 +37,7 @@ fun InputDefault(
     maxLength: Int = 60,
     color: Color = MaterialTheme.colorScheme.surfaceContainer,
     keyboardOptions: KeyboardOptions = KeyboardOptions(),
+    onValueAfter: () -> Unit = {},
     onEnter: () -> Unit = {},
 ) {
     Column {
@@ -85,6 +90,7 @@ fun InputDefault(
                     onSubmit()
                 }
                 textState.value = text
+                onValueAfter()
             },
             shape = RoundedCornerShape(8.dp),
             singleLine = singleLine,
@@ -100,6 +106,57 @@ fun InputDefault(
                             tint = MaterialTheme.colorScheme.onSurface
                         )
                     }
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun InputCard(
+    label: String,
+    text: String,
+    icon: ImageVector? = null,
+    maxLength: Int = 60,
+    color: Color = MaterialTheme.colorScheme.surfaceContainer,
+    onClick: () -> Unit
+) {
+    Column {
+        val singleLine = maxLength <= 60
+
+        TextField(
+            label = {
+                Text(
+                    text = label,
+                    modifier = Modifier
+                        .fillMaxWidth(),
+                    textAlign = TextAlign.Start,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                    onClick()
+                },
+            value = text,
+            enabled = false,
+            colors = TextFieldDefaults.colors(
+                disabledLabelColor = MaterialTheme.colorScheme.surface,
+                disabledContainerColor = color,
+                disabledIndicatorColor = Color.Transparent,
+                disabledTextColor = MaterialTheme.colorScheme.onBackground
+            ),
+            onValueChange = { },
+            shape = RoundedCornerShape(8.dp),
+            singleLine = singleLine,
+            trailingIcon = {
+                if (icon != null) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
                 }
             }
         )

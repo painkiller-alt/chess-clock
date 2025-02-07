@@ -1,15 +1,15 @@
 package com.oltrysifp.chessclock
 
-import android.content.ContentValues.TAG
 import android.os.Bundle
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.animation.core.AnimationSpec
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -20,73 +20,79 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Update
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.UiComposable
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.PointerEvent
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.oltrysifp.chessclock.composable.CircularRevealAnimation
+import com.oltrysifp.chessclock.composable.LifecycleEffect
+import com.oltrysifp.chessclock.composable.SelectTimePopup
 import com.oltrysifp.chessclock.models.TimeControl
 import com.oltrysifp.chessclock.ui.theme.ChessTimerTheme
+import com.oltrysifp.chessclock.util.Constants
+import com.oltrysifp.chessclock.util.EdgeToEdgeConfig
+import com.oltrysifp.chessclock.util.KeepScreenOn
 import kotlinx.coroutines.delay
-import kotlin.math.ceil
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import kotlin.math.floor
-import kotlin.math.max
 
 class Timer : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val firstStart = intent.getIntExtra("firstStart", -1)
-        val firstAdd = intent.getIntExtra("firstAdd", -1)
-        val secondStart = intent.getIntExtra("secondStart", -1)
-        val secondAdd = intent.getIntExtra("secondAdd", -1)
-        val name = intent.getStringExtra("name")
+        val selectedTimeString = intent.getStringExtra("selectedTime")
 
-        val selectedTime = TimeControl(
-            firstStart,
-            firstAdd,
-            secondStart,
-            secondAdd,
-            name ?: "Без имени"
-        )
+        val selectedTime = if (selectedTimeString != null) {
+            Json.decodeFromString<TimeControl>(selectedTimeString)
+        } else {
+            return
+        }
 
         setContent {
+            val isPaused = remember { mutableStateOf(true) }
+
+            LifecycleEffect(
+                onPause = { isPaused.value = true }
+            )
+
             EdgeToEdgeConfig(this)
+            KeepScreenOn()
 
             ChessTimerTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Column(
-                        Modifier
-                            .fillMaxSize()
-                    ) {
-                        TimerContent(innerPadding, selectedTime)
-                    }
+                    TimerContent(innerPadding, selectedTime, isPaused)
                 }
             }
         }
@@ -94,21 +100,82 @@ class Timer : ComponentActivity() {
 }
 
 @Composable
-fun TimerContent(innerPadding: PaddingValues, selectedTime: TimeControl) {
+fun TimerContent(innerPadding: PaddingValues, selectedTime: TimeControl, isPaused: MutableState<Boolean>) {
+    val isDelayOn = selectedTime.mode == Constants.TimerMode.DELAY
     val firstChecked = remember { mutableStateOf(false) }
     val secondChecked = remember { mutableStateOf(false) }
 
-    var firstTimeLeft: Long by remember { mutableLongStateOf(selectedTime.firstStart.toLong() * 1000) }
-    var secondTimeLeft: Long by remember { mutableLongStateOf(selectedTime.secondStart.toLong() * 1000) }
+    var firstMoveNumber by remember { mutableIntStateOf(0) }
+    var secondMoveNumber by remember { mutableIntStateOf(0) }
+
+    var firstTimeLeft by remember { mutableLongStateOf(selectedTime.firstStart.toLong() * 1000) }
+    var secondTimeLeft by remember { mutableLongStateOf(selectedTime.secondStart.toLong() * 1000) }
+
+    val lastChecked = remember { mutableIntStateOf(0) }
     var prevSystemTime = System.currentTimeMillis()
 
-    LaunchedEffect(Unit) {
-        while (true) {
+    var firstLastMoveTime by remember { mutableLongStateOf(0) }
+    var secondLastMoveTime by remember { mutableLongStateOf(0) }
+    var firstDelayLeft by remember {
+        mutableLongStateOf(
+            if (isDelayOn) selectedTime.firstAdd.toLong() * 1000
+            else 0
+        )
+    }
+    var secondDelayLeft by remember {
+        mutableLongStateOf(
+            if (isDelayOn) selectedTime.secondAdd.toLong() * 1000
+            else 0
+        )
+    }
+
+    val firstTimeSelector = remember { mutableStateOf(false) }
+    SelectTimePopup(firstTimeSelector, firstTimeLeft/1000) { firstTimeLeft = it*1000 }
+    val secondTimeSelector = remember { mutableStateOf(false) }
+    SelectTimePopup(secondTimeSelector, secondTimeLeft/1000) { secondTimeLeft = it*1000 }
+
+    LaunchedEffect(isPaused.value) {
+        if (isPaused.value) {
+            firstChecked.value = false
+            secondChecked.value = false
+        }
+
+        while (!isPaused.value) {
             val passed = System.currentTimeMillis() - prevSystemTime
             prevSystemTime = System.currentTimeMillis()
 
-            val firstNew = firstTimeLeft - passed
-            val secondNew = secondTimeLeft - passed
+            val firstNew: Long
+            val secondNew: Long
+            var firstDelayNew = firstDelayLeft
+            var secondDelayNew = secondDelayLeft
+
+            when (selectedTime.mode) {
+                Constants.TimerMode.FISCHER -> {
+                    firstNew = firstTimeLeft - passed
+                    secondNew = secondTimeLeft - passed
+                }
+
+                Constants.TimerMode.BRONSTEIN -> {
+                    firstNew = firstTimeLeft - passed
+                    secondNew = secondTimeLeft - passed
+                }
+
+                Constants.TimerMode.DELAY -> {
+                    if (firstDelayLeft < 0) {
+                        firstNew = firstTimeLeft - passed
+                    } else {
+                        firstNew = firstTimeLeft
+                        firstDelayNew = firstDelayLeft - passed
+                    }
+
+                    if (secondDelayLeft < 0) {
+                        secondNew = secondTimeLeft - passed
+                    } else {
+                        secondNew = secondTimeLeft
+                        secondDelayNew = secondDelayLeft - passed
+                    }
+                }
+            }
 
             if (firstNew <= 0 || secondNew <= 0) {
                 if (firstNew <= 0) {
@@ -119,8 +186,14 @@ fun TimerContent(innerPadding: PaddingValues, selectedTime: TimeControl) {
                 break
             }
 
-            if (firstChecked.value) {firstTimeLeft = firstNew}
-            if (secondChecked.value) {secondTimeLeft = secondNew}
+            if (firstChecked.value) {
+                firstTimeLeft = firstNew
+                if (isDelayOn) { firstDelayLeft = firstDelayNew }
+            }
+            if (secondChecked.value) {
+                secondTimeLeft = secondNew
+                if (isDelayOn) { secondDelayLeft = secondDelayNew }
+            }
 
             delay(50)
         }
@@ -137,270 +210,297 @@ fun TimerContent(innerPadding: PaddingValues, selectedTime: TimeControl) {
         label = "alpha"
     )
 
-    FirstPlayer(
-        firstChecked,
-        {
-            val isNotStarted = (!firstChecked.value && !secondChecked.value)
+    val onSettingsOpen = { isFirst: Boolean ->
+        isPaused.value = true
 
-            if (!isNotStarted) {
-                firstTimeLeft += selectedTime.firstAdd * 1000
-            }
+        firstChecked.value = false
+        secondChecked.value = false
 
-            val isNotEnded = (firstTimeLeft.toInt() != 0 && secondTimeLeft.toInt() != 0)
-            if ((firstChecked.value || isNotStarted) && isNotEnded) {
-                firstChecked.value = false
-                secondChecked.value = true
-            }
-        },
-        startContent = {
-            PlayerInterface(firstTimeLeft, false, firstAlpha, MaterialTheme.colorScheme.background, innerPadding)
-        },
-        checkedContent = {
-            PlayerInterface(firstTimeLeft, true, firstAlpha, MaterialTheme.colorScheme.primary, innerPadding)
+        if (isFirst) {
+            firstTimeSelector.value = true
+        } else {
+            secondTimeSelector.value = true
         }
-    )
-    CentralMenu()
-    SecondPlayer(
-        secondChecked,
-        {
-            val isNotStarted = (!firstChecked.value && !secondChecked.value)
-
-            if (!isNotStarted) {
-                secondTimeLeft += selectedTime.secondAdd * 1000
-            }
-
-            val isNotEnded = (firstTimeLeft.toInt() != 0 && secondTimeLeft.toInt() != 0)
-
-            if ((secondChecked.value || isNotStarted) && isNotEnded) {
-                firstChecked.value = true
-                secondChecked.value = false
-            }
-        },
-        startContent = {
-            PlayerInterface(secondTimeLeft, false, secondAlpha, MaterialTheme.colorScheme.background, innerPadding)
-        },
-        checkedContent = {
-            PlayerInterface(secondTimeLeft, true, secondAlpha, MaterialTheme.colorScheme.primary, innerPadding)
-        }
-    )
-}
-
-@Composable
-fun FirstPlayer(
-    checked: MutableState<Boolean>,
-    onCheck: () -> Unit,
-    startContent: @Composable () -> Unit,
-    checkedContent: @Composable () -> Unit
-) {
-    var isFingerDown: Boolean by remember { mutableStateOf(false) }
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .rotate(180f)
-            .fillMaxHeight(0.45f)
-    ) {
-        CircularRevealAnimation(
-            if (checked.value) 1f else 0f,
-            startContent = {
-                startContent()
-            },
-            endContent = {
-                checkedContent()
-            },
-            onPointerEvent = { event, fingerDown ->
-                when (event.type) {
-                    PointerEventType.Release -> {
-                        onCheck()
-                    }
-                }
-                isFingerDown = fingerDown
-            }
-        )
     }
-}
 
-@Composable
-fun SecondPlayer(
-    checked: MutableState<Boolean>,
-    onCheck: () -> Unit,
-    startContent: @Composable () -> Unit,
-    checkedContent: @Composable () -> Unit
-) {
-    var isFingerDown: Boolean by remember { mutableStateOf(false) }
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .fillMaxHeight()
+    Column(
+        modifier = Modifier.fillMaxSize()
     ) {
-        CircularRevealAnimation(
-            if (checked.value) 1f else 0f,
-            startContent = {
-                startContent()
-            },
-            endContent = {
-                checkedContent()
-            },
-            onPointerEvent = { event, fingerDown ->
-                when (event.type) {
-                    PointerEventType.Release -> {
-                        onCheck()
-                    }
-                }
-                isFingerDown = fingerDown
-            }
-        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        ) {
+            Player(
+                firstChecked,
+                Modifier.rotate(180f),
+                {
+                    isPaused.value = false
+                    val isNotStarted = (!firstChecked.value && !secondChecked.value)
+                    val isNotEnded = (firstTimeLeft.toInt() != 0 && secondTimeLeft.toInt() != 0)
 
-    }
-}
+                    if ((firstChecked.value || isNotStarted) && isNotEnded) {
+                        firstChecked.value = false
+                        secondChecked.value = true
 
-@Composable
-fun CircularRevealAnimation(
-    revealPercentTarget: Float,
-    startContent: @Composable @UiComposable () -> Unit,
-    endContent: @Composable @UiComposable () -> Unit,
-    modifier: Modifier = Modifier,
-    onPointerEvent: ((event: PointerEvent, isFingerDown: Boolean) -> Unit)? = null,
-    animationSpec: AnimationSpec<Float> = spring(),
-    topContentIsTransparent: Boolean = false,
-) {
-    // Tracks if the finger is up or down in real time
-    var isFingerDown: Boolean by remember { mutableStateOf(false) }
-    // Tracks the last position of the finger for the duration of the animation
-    val fingerOffsetState: MutableState<Offset?> = remember { mutableStateOf(null) }
-    // The percent of the top layer to clip
-    val endContentClipPercent by animateFloatAsState(
-        targetValue = revealPercentTarget,
-        label = "Circular Reveal Clip Percent",
-        animationSpec = animationSpec,
-        finishedListener = {
-            if (!isFingerDown) {
-                fingerOffsetState.value = null
-            }
-        }
-    )
-
-    Box(
-        modifier
-            .pointerInput(onPointerEvent) {
-            awaitPointerEventScope {
-                while (true) {
-                    val event: PointerEvent = awaitPointerEvent()
-
-                    if (revealPercentTarget == 1f) {
-                        return@awaitPointerEventScope
-                    }
-
-                    when (event.type) {
-                        PointerEventType.Press -> {
-                            isFingerDown = true
-                            val offset = event.changes.last().position
-                            fingerOffsetState.value = offset
-                        }
-                        PointerEventType.Release -> {
-                            if (isFingerDown) {
-                                isFingerDown = false
-                            }
-                        }
-                        PointerEventType.Move -> {
-                            if (isFingerDown) {
-                                val offset = event.changes.last().position
-                                if (
-                                    offset.x < 0 ||
-                                    offset.y < 0 ||
-                                    offset.x > size.width ||
-                                    offset.y > size.height
-                                ) {
-                                    isFingerDown = false
-                                } else {
-                                    fingerOffsetState.value = offset
+                        if (!isNotStarted || lastChecked.intValue == 2) {
+                            lastChecked.intValue = 1
+                            firstMoveNumber += 1
+                            when (selectedTime.mode) {
+                                Constants.TimerMode.FISCHER ->
+                                { firstTimeLeft += selectedTime.secondAdd * 1000 }
+                                Constants.TimerMode.BRONSTEIN ->
+                                {
+                                    val plus = firstLastMoveTime - firstTimeLeft
+                                    if (plus < selectedTime.firstAdd*1000) firstTimeLeft += plus
+                                    else firstTimeLeft += selectedTime.firstAdd * 1000
                                 }
+                                Constants.TimerMode.DELAY -> { }
                             }
+                            firstLastMoveTime = firstTimeLeft
+                        } else if (lastChecked.intValue == 0) {
+                            firstLastMoveTime = firstTimeLeft
+                            secondLastMoveTime = secondTimeLeft
+                            firstMoveNumber += 1
                         }
-                        else -> Log.v(TAG, "Unexpected Event type ${event.type}")
+                        if (isDelayOn) firstDelayLeft = (selectedTime.firstAdd * 1000).toLong()
                     }
-
-                    onPointerEvent?.invoke(event, isFingerDown)
-                }
-            }
-
-            // Explicitly don't return the awaitPointerEventScope to avoid lint warning
-            @Suppress("RedundantUnitExpression", "RedundantSuppression")
-            Unit
-        },
-    ) {
-        // Draw the bottom layer if the top layer is transparent, or the top isn't fully animated in.
-        if (endContentClipPercent < 1f || topContentIsTransparent) {
-            startContent()
-        }
-
-        val fingerOffset: Offset? = fingerOffsetState.value
-        // Draw the top layer if it's not being fully clipped by the mask
-        if (endContentClipPercent > 0f) {
-            val path: Path = remember { Path() }
-
-            val clipModifier: Modifier = if (endContentClipPercent < 1f && fingerOffset != null) {
-                Modifier.drawWithContent {
-                    path.rewind()
-
-                    val largestDimension = max(size.width, size.height)
-
-                    path.addOval(
-                        Rect(
-                            center = fingerOffset,
-                            radius = endContentClipPercent * largestDimension
-                        )
+                },
+                startContent = {
+                    PlayerInterface(firstTimeLeft, firstDelayLeft, secondTimeLeft, firstMoveNumber, isPaused,
+                        { onSettingsOpen(true) }, false, firstAlpha, MaterialTheme.colorScheme.background, innerPadding)
+                },
+                checkedContent = {
+                    PlayerInterface(firstTimeLeft, firstDelayLeft, secondTimeLeft, firstMoveNumber, isPaused,
+                        { onSettingsOpen(true) }, true, firstAlpha, MaterialTheme.colorScheme.primary, innerPadding
                     )
-
-                    clipPath(path) {
-                        this@drawWithContent.drawContent()
-                    }
                 }
-            } else {
-                Modifier
-            }
+            )
+        }
+        CentralMenu(
+            isPaused,
+            (firstTimeLeft.toInt() == 0 || secondTimeLeft.toInt() == 0),
+            onResume = {
+                if (lastChecked.intValue == 1) {
+                    firstChecked.value = true
+                } else if (lastChecked.intValue == 2) {
+                    secondChecked.value = true
+                }
+            },
+            onReset = {
+                firstChecked.value = false
+                secondChecked.value = false
 
-            Box(
-                modifier = clipModifier
-            ) {
-                endContent()
+                firstTimeLeft = selectedTime.firstStart.toLong() * 1000
+                secondTimeLeft = selectedTime.secondStart.toLong() * 1000
+                if (isDelayOn) {
+                    secondDelayLeft = (selectedTime.secondAdd * 1000).toLong()
+                    firstDelayLeft = (selectedTime.firstAdd * 1000).toLong()
+                }
+                firstMoveNumber = 0
+                secondMoveNumber = 0
+                secondLastMoveTime = 0
+                firstLastMoveTime = 0
+                lastChecked.intValue = 0
+                isPaused.value = true
             }
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        ) {
+            Player(
+                secondChecked,
+                Modifier,
+                {
+                    isPaused.value = false
+                    val isNotStarted = (!firstChecked.value && !secondChecked.value)
+                    val isNotEnded = (firstTimeLeft.toInt() != 0 && secondTimeLeft.toInt() != 0)
+
+                    if ((secondChecked.value || isNotStarted) && isNotEnded) {
+                        firstChecked.value = true
+                        secondChecked.value = false
+
+                        if (!isNotStarted || lastChecked.intValue == 1) {
+                            lastChecked.intValue = 2
+                            secondMoveNumber += 1
+                            when (selectedTime.mode) {
+                                Constants.TimerMode.FISCHER ->
+                                    { secondTimeLeft += selectedTime.secondAdd * 1000 }
+                                Constants.TimerMode.BRONSTEIN ->
+                                    {
+                                        val plus = secondLastMoveTime - secondTimeLeft
+                                        if (plus < selectedTime.secondAdd*1000) secondTimeLeft += plus
+                                        else secondTimeLeft += selectedTime.secondAdd*1000
+                                    }
+                                Constants.TimerMode.DELAY -> { }
+                            }
+                            secondLastMoveTime = secondTimeLeft
+                        } else if (lastChecked.intValue == 0) {
+                            firstLastMoveTime = firstTimeLeft
+                            secondLastMoveTime = secondTimeLeft
+                            secondMoveNumber += 1
+                        }
+                        if (isDelayOn) secondDelayLeft = (selectedTime.secondAdd * 1000).toLong()
+                    }
+                },
+                startContent = {
+                    PlayerInterface(secondTimeLeft, secondDelayLeft, firstTimeLeft, secondMoveNumber, isPaused,
+                        { onSettingsOpen(false) }, false, secondAlpha, MaterialTheme.colorScheme.background, innerPadding)
+                },
+                checkedContent = {
+                    PlayerInterface(secondTimeLeft, secondDelayLeft, firstTimeLeft, secondMoveNumber, isPaused,
+                        { onSettingsOpen(false) }, true, secondAlpha, MaterialTheme.colorScheme.primary, innerPadding)
+                }
+            )
         }
     }
 }
 
 @Composable
-fun CentralMenu() {
+fun Player(
+    checked: MutableState<Boolean>,
+    modifier: Modifier,
+    onCheck: () -> Unit,
+    startContent: @Composable () -> Unit,
+    checkedContent: @Composable () -> Unit
+) {
+    var isFingerDown: Boolean by remember { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+    ) {
+        CircularRevealAnimation(
+            if (checked.value) 1f else 0f,
+            startContent = {
+                startContent()
+            },
+            endContent = {
+                checkedContent()
+            },
+            onPointerEvent = { event, fingerDown ->
+                when (event.type) {
+                    PointerEventType.Release -> {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onCheck()
+                    }
+                }
+                isFingerDown = fingerDown
+            }
+        )
+
+    }
+}
+
+@Composable
+fun CentralMenu(
+    isPaused: MutableState<Boolean>,
+    isEnd: Boolean,
+    onResume: () -> Unit,
+    onReset: () -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .fillMaxHeight(0.1f)
+            .fillMaxHeight(0.05f)
             .background(MaterialTheme.colorScheme.surface),
-        verticalAlignment = Alignment.CenterVertically
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Icon(
-            Icons.Filled.PlayArrow,
-            "Пауза",
-            modifier = Modifier.size(64.dp)
-        )
+        if (isPaused.value || isEnd) {
+            Button(
+                modifier = Modifier.size(64.dp),
+                contentPadding = PaddingValues(0.dp),
+                shape = RoundedCornerShape(6.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.Transparent
+                ),
+                onClick = {
+                    isPaused.value = false
+                    onResume()
+                }
+            ) {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    "Возобновить",
+                    modifier = Modifier.size(64.dp),
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
+            }
+        } else {
+            Button(
+                modifier = Modifier.size(64.dp),
+                contentPadding = PaddingValues(0.dp),
+                shape = RoundedCornerShape(6.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.Transparent
+                ),
+                onClick = { isPaused.value = true }
+            ) {
+                Icon(
+                    Icons.Filled.Pause,
+                    "Пауза",
+                    modifier = Modifier.size(64.dp),
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
+            }
+        }
+
+        Button(
+            modifier = Modifier.size(64.dp),
+            contentPadding = PaddingValues(0.dp),
+            shape = RoundedCornerShape(6.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color.Transparent
+            ),
+            onClick = { onReset() }
+        ) {
+            Icon(
+                Icons.Filled.Update,
+                "Пауза",
+                modifier = Modifier.size(64.dp),
+                tint = MaterialTheme.colorScheme.onBackground
+            )
+        }
     }
 }
 
 @Composable
-fun PlayerInterface(timeLeft: Long, isActive: Boolean, a: Float, background: Color, innerPadding: PaddingValues) {
+fun PlayerInterface(
+    timeLeft: Long,
+    delayLeft: Long,
+    opponentTimeLeft: Long,
+    moveNumber: Int,
+    isPaused: MutableState<Boolean>,
+    onSettings: () -> Unit,
+    isActive: Boolean,
+    a: Float,
+    background: Color,
+    innerPadding: PaddingValues
+) {
     val redColor = Color.Red
+
+    val timesPair = getTimesPair(timeLeft)
+    val general = timesPair.first
+    val centi = timesPair.second
     val secondsLeft = timeLeft.toDouble() / 1000
-    val minutesLeft = floor((secondsLeft+1) / 60)
 
-    val secondsLeftInMinute = ceil(secondsLeft - minutesLeft*60)
-    val centiSecondsLeftInSecond = ((timeLeft.toDouble() / 100) - (secondsLeftInMinute-1)*10).toInt()
+    val opponentTimesPair = getTimesPair(opponentTimeLeft)
+    val opponentSecondsLeft = opponentTimeLeft.toDouble() / 1000
+    val opponentGeneral = opponentTimesPair.first
+    val opponentCenti = if (opponentSecondsLeft <= 5 && opponentSecondsLeft > 0) {opponentTimesPair.second} else ""
 
-    val secondsZero = if (secondsLeftInMinute<10) "0" else ""
-    val minutesZero = if (minutesLeft<10) "0" else ""
-
-    val mins = "${minutesZero}${minutesLeft.toInt()}"
-    val secs = "${secondsZero}${secondsLeftInMinute.toInt()}"
+    var delayGeneral = ""
+    var delayCenti = ""
+    if (delayLeft > 0) {
+        val delayTimesPair = getTimesPair(delayLeft)
+        val delaySecondsLeft = delayLeft.toDouble() / 1000
+        delayGeneral = delayTimesPair.first
+        delayCenti = if (delaySecondsLeft <= 5 && delaySecondsLeft > 0) {delayTimesPair.second} else ""
+    }
 
     Box(
         modifier = Modifier
@@ -421,11 +521,27 @@ fun PlayerInterface(timeLeft: Long, isActive: Boolean, a: Float, background: Col
             .fillMaxSize()
             .padding(innerPadding)
     ) {
+        if (delayLeft > 0) {
+            Text(
+                "$delayGeneral$delayCenti",
+                modifier = Modifier.offset(
+                    y = (-100).dp
+                ),
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Black,
+                color = if (!isActive) {
+                    MaterialTheme.colorScheme.onBackground
+                } else {
+                    MaterialTheme.colorScheme.surface
+                }
+            )
+        }
+
         Row(
             verticalAlignment = Alignment.Bottom
         ) {
             Text(
-                text = "${mins}:${secs}",
+                text = general,
                 fontSize = 90.sp,
                 fontWeight = FontWeight.Black,
                 color = if (!isActive) {
@@ -438,7 +554,7 @@ fun PlayerInterface(timeLeft: Long, isActive: Boolean, a: Float, background: Col
 
         if (secondsLeft <= 5 && secondsLeft > 0) {
             Text(
-                ".${centiSecondsLeftInSecond}",
+                centi,
                 modifier = Modifier.offset(
                     x=132.dp,
                     y=24.dp
@@ -452,5 +568,78 @@ fun PlayerInterface(timeLeft: Long, isActive: Boolean, a: Float, background: Col
                 }
             )
         }
+
+        AnimatedVisibility(
+            isPaused.value,
+            enter = fadeIn(tween(200)),
+            exit = fadeOut(tween(200))
+        ) {
+            val c = rememberCoroutineScope()
+            TextButton (
+                modifier = Modifier
+                    .offset(y = 100.dp)
+                    .size(72.dp),
+                shape = CircleShape,
+                onClick = {
+                    c.launch {
+                        onSettings()
+                    }
+                }
+            ) {
+                Icon(
+                    Icons.Filled.Settings,
+                    "Настроить время",
+                    modifier = Modifier
+                        .size(48.dp),
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
+            }
+        }
     }
+
+    Row(
+        Modifier
+            .padding(4.dp)
+            .fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            "У противника: $opponentGeneral$opponentCenti",
+            fontWeight = FontWeight.Black,
+            color = if (!isActive) {
+                MaterialTheme.colorScheme.onBackground
+            } else {
+                MaterialTheme.colorScheme.surface
+            }
+        )
+
+        Text(
+            "Ходов: $moveNumber",
+            fontWeight = FontWeight.Black,
+            color = if (!isActive) {
+                MaterialTheme.colorScheme.onBackground
+            } else {
+                MaterialTheme.colorScheme.surface
+            }
+        )
+    }
+}
+
+fun getTimesPair(millis: Long): Pair<String, String> {
+    val secondsLeft = millis.toDouble() / 1000
+    val minutesLeft = floor((secondsLeft) / 60)
+    val hoursLeft = floor((minutesLeft) / 60)
+
+    val secondsLeftInMinute = floor(secondsLeft - minutesLeft*60)
+    val minutesLeftInHour = floor(minutesLeft - hoursLeft*60)
+    val centiSecondsLeftInSecond = ((millis.toDouble() / 100) - (secondsLeftInMinute)*10).toInt()
+
+    val secondsZero = if (secondsLeftInMinute<10) "0" else ""
+    val minutesZero = if (minutesLeftInHour<10) "0" else ""
+
+    val hours = if (hoursLeft > 0) {"${hoursLeft.toInt()}:"} else {""}
+    val mins = "${minutesZero}${minutesLeftInHour.toInt()}"
+    val secs = "${secondsZero}${secondsLeftInMinute.toInt()}"
+
+    return Pair("$hours$mins:$secs", ".$centiSecondsLeftInSecond")
 }

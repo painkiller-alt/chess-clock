@@ -4,6 +4,6 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class UserData (
-    val selectedTimeControl: TimeControl,
-    val customTimeControls: List<TimeControl>
+    var selectedTimeControl: TimeControl?,
+    var customTimeControls: MutableList<TimeControl>
 )

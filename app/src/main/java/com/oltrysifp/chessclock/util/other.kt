@@ -1,4 +1,4 @@
-package com.oltrysifp.chessclock
+package com.oltrysifp.chessclock.util
 
 import android.util.Log
 import androidx.activity.ComponentActivity
