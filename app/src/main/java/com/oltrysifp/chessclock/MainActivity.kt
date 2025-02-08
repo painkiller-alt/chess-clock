@@ -12,7 +12,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,10 +23,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -53,7 +52,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.rememberNestedScrollInteropConnection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -83,6 +84,7 @@ class MainActivity : ComponentActivity() {
                             .fillMaxSize()
                             .padding(innerPadding)
                             .padding(20.dp)
+                            .verticalScroll(rememberScrollState())
                     ) {
                         MenuContent()
                     }
@@ -103,8 +105,11 @@ fun MenuContent() {
     val dataStoreManager = DataStoreManager(context)
     LoadUserData(dataStoreManager, userData.value, userDataLoaded)
 
+    val nestedScrollConnection = rememberNestedScrollInteropConnection()
     Column(
-        Modifier.fillMaxSize()
+        Modifier
+            .fillMaxSize()
+            .nestedScroll(nestedScrollConnection)
     ) {
         Box(
             contentAlignment = Alignment.Center,
@@ -290,7 +295,6 @@ fun RapidTimes(selectedTime: MutableState<TimeControl?>) {
     )
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CustomTimes(
     selectedTime: MutableState<TimeControl?>,
@@ -341,14 +345,11 @@ fun CustomTimes(
                 ),
                 shape = RoundedCornerShape(10.dp)
             ) {
-                LazyColumn (
+                Column (
                     Modifier
                         .padding(10.dp)
                 ) {
-                    items(
-                        customTimeControls,
-                        key = { it.name }
-                    ) { timeControl ->
+                    customTimeControls.forEach { timeControl ->
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -356,8 +357,7 @@ fun CustomTimes(
                                 .clickable {
                                     selectedTime.value = timeControl
                                     expanded = false
-                                }
-                                .animateItemPlacement(),
+                                },
                             verticalArrangement = Arrangement.Center
                         ) {
                             Row(
@@ -400,31 +400,25 @@ fun CustomTimes(
                         }
                     }
 
-                    item(
-                        key = "<!add_new_item>"
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    val b = Bundle()
-                                    b.putString("userData", Json.encodeToString(userData))
-                                    val intent = Intent(context, AddCustomTime::class.java)
-                                    intent.putExtras(b)
-                                    context.startActivity(intent)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                val b = Bundle()
+                                b.putString("userData", Json.encodeToString(userData))
+                                val intent = Intent(context, AddCustomTime::class.java)
+                                intent.putExtras(b)
+                                context.startActivity(intent)
 
-                                    expanded = false
-                                }
-                                .animateItemPlacement(),
-                            verticalArrangement = Arrangement.Center
-                        ) {
-                            Text(
-                                "Добавить новое",
-                                fontSize = 20.sp,
-                                modifier = Modifier
-                                    .padding(6.dp),
-                            )
-                        }
+                                expanded = false
+                            },
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            "Добавить новое",
+                            fontSize = 20.sp,
+                            modifier = Modifier
+                                .padding(6.dp),)
                     }
                 }
             }
